@@ -1,0 +1,40 @@
+name: Fidibo Art Scraper
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Every day at 09:00 Rome time ~= 08:00 UTC in winter, 07:00 UTC in summer.
+    # If you want exact local-time scheduling year-round, pick your preferred UTC time.
+    - cron: "9 * * * *"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python fidibo.py
+
+      - name: Upload JSON artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fidibo_art_shows
+          path: fidibo_art_shows.json
+          if-no-files-found: warn

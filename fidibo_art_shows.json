@@ -1,0 +1,461 @@
+[
+  {
+    "title": "ویژه بانوان نیست",
+    "url": "https://art.fidibo.com/theater/ویژه-بانوان-نیست-13",
+    "event_id": 13,
+    "event_uuid": "cc4b353f-c2eb-11f0-8a0f-fa163eccdccf",
+    "sessions": [
+      {
+        "id": 201,
+        "week_day": "یک‌شنبه",
+        "day": 30,
+        "month": "آذر",
+        "time": "19:45",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 273,
+          "available_seats": 0,
+          "sold_seats_state_3": 269,
+          "locked_seats_state_4": 4,
+          "other_state_seats": 0,
+          "currency": null,
+          "available_min_price": null,
+          "available_max_price": null,
+          "available_unique_prices": []
+        }
+      },
+      {
+        "id": 519,
+        "week_day": "دوشنبه",
+        "day": 1,
+        "month": "دی",
+        "time": "19:45",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 273,
+          "available_seats": 37,
+          "sold_seats_state_3": 232,
+          "locked_seats_state_4": 4,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 450000,
+          "available_max_price": 550000,
+          "available_unique_prices": [
+            450000,
+            500000,
+            550000
+          ]
+        }
+      },
+      {
+        "id": 520,
+        "week_day": "سه‌شنبه",
+        "day": 2,
+        "month": "دی",
+        "time": "19:45",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 273,
+          "available_seats": 17,
+          "sold_seats_state_3": 245,
+          "locked_seats_state_4": 4,
+          "other_state_seats": 7,
+          "currency": "تومان",
+          "available_min_price": 450000,
+          "available_max_price": 550000,
+          "available_unique_prices": [
+            450000,
+            500000,
+            550000
+          ]
+        }
+      },
+      {
+        "id": 521,
+        "week_day": "چهارشنبه",
+        "day": 3,
+        "month": "دی",
+        "time": "19:45",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 273,
+          "available_seats": 2,
+          "sold_seats_state_3": 267,
+          "locked_seats_state_4": 4,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 500000,
+          "available_max_price": 550000,
+          "available_unique_prices": [
+            500000,
+            550000
+          ]
+        }
+      }
+    ],
+    "score": {
+      "average": 4.3,
+      "count": 21,
+      "replies": 142,
+      "breakdown": {
+        "rate_1": 3,
+        "rate_2": 1,
+        "rate_3": 0,
+        "rate_4": 0,
+        "rate_5": 17
+      }
+    }
+  },
+  {
+    "title": "باد زرد ونگوگ",
+    "url": "https://art.fidibo.com/theater/باد-زرد-ونگوگ-17",
+    "event_id": 17,
+    "event_uuid": "cc4b3bff-c2eb-11f0-8a0f-fa163eccdccf",
+    "sessions": [
+      {
+        "id": 505,
+        "week_day": "دوشنبه",
+        "day": 24,
+        "month": "آذر",
+        "time": "19:30",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 579,
+          "available_seats": 377,
+          "sold_seats_state_3": 146,
+          "locked_seats_state_4": 56,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 400000,
+          "available_max_price": 500000,
+          "available_unique_prices": [
+            400000,
+            500000
+          ]
+        }
+      },
+      {
+        "id": 506,
+        "week_day": "سه‌شنبه",
+        "day": 25,
+        "month": "آذر",
+        "time": "19:30",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 579,
+          "available_seats": 375,
+          "sold_seats_state_3": 148,
+          "locked_seats_state_4": 56,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 400000,
+          "available_max_price": 500000,
+          "available_unique_prices": [
+            400000,
+            500000
+          ]
+        }
+      },
+      {
+        "id": 510,
+        "week_day": "چهارشنبه",
+        "day": 26,
+        "month": "آذر",
+        "time": "19:30",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 579,
+          "available_seats": 415,
+          "sold_seats_state_3": 108,
+          "locked_seats_state_4": 56,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 400000,
+          "available_max_price": 500000,
+          "available_unique_prices": [
+            400000,
+            500000
+          ]
+        }
+      },
+      {
+        "id": 511,
+        "week_day": "پنج‌شنبه",
+        "day": 27,
+        "month": "آذر",
+        "time": "19:30",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 579,
+          "available_seats": 378,
+          "sold_seats_state_3": 145,
+          "locked_seats_state_4": 56,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 400000,
+          "available_max_price": 500000,
+          "available_unique_prices": [
+            400000,
+            500000
+          ]
+        }
+      },
+      {
+        "id": 512,
+        "week_day": "جمعه",
+        "day": 28,
+        "month": "آذر",
+        "time": "19:30",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 579,
+          "available_seats": 402,
+          "sold_seats_state_3": 121,
+          "locked_seats_state_4": 56,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 400000,
+          "available_max_price": 500000,
+          "available_unique_prices": [
+            400000,
+            500000
+          ]
+        }
+      }
+    ],
+    "score": {
+      "average": 3.9,
+      "count": 28,
+      "replies": 13,
+      "breakdown": {
+        "rate_1": 4,
+        "rate_2": 2,
+        "rate_3": 3,
+        "rate_4": 4,
+        "rate_5": 15
+      }
+    }
+  },
+  {
+    "title": "ماهی بلژیکی‌",
+    "url": "https://art.fidibo.com/theater/ماهی-بلژیکی‌-20",
+    "event_id": 20,
+    "event_uuid": "ba05295c-c86c-11f0-8a0f-fa163eccdccf",
+    "sessions": [
+      {
+        "id": 215,
+        "week_day": "دوشنبه",
+        "day": 24,
+        "month": "آذر",
+        "time": "19:00",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 308,
+          "available_seats": 123,
+          "sold_seats_state_3": 175,
+          "locked_seats_state_4": 10,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 650000,
+          "available_max_price": 700000,
+          "available_unique_prices": [
+            650000,
+            700000
+          ]
+        }
+      },
+      {
+        "id": 216,
+        "week_day": "سه‌شنبه",
+        "day": 25,
+        "month": "آذر",
+        "time": "19:00",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 308,
+          "available_seats": 108,
+          "sold_seats_state_3": 191,
+          "locked_seats_state_4": 9,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 650000,
+          "available_max_price": 700000,
+          "available_unique_prices": [
+            650000,
+            700000
+          ]
+        }
+      },
+      {
+        "id": 513,
+        "week_day": "چهارشنبه",
+        "day": 26,
+        "month": "آذر",
+        "time": "19:00",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 308,
+          "available_seats": 277,
+          "sold_seats_state_3": 21,
+          "locked_seats_state_4": 10,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 550000,
+          "available_max_price": 600000,
+          "available_unique_prices": [
+            550000,
+            600000
+          ]
+        }
+      },
+      {
+        "id": 514,
+        "week_day": "پنج‌شنبه",
+        "day": 27,
+        "month": "آذر",
+        "time": "19:00",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 308,
+          "available_seats": 255,
+          "sold_seats_state_3": 43,
+          "locked_seats_state_4": 10,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 550000,
+          "available_max_price": 600000,
+          "available_unique_prices": [
+            550000,
+            600000
+          ]
+        }
+      },
+      {
+        "id": 515,
+        "week_day": "جمعه",
+        "day": 28,
+        "month": "آذر",
+        "time": "19:00",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 308,
+          "available_seats": 241,
+          "sold_seats_state_3": 57,
+          "locked_seats_state_4": 10,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 550000,
+          "available_max_price": 600000,
+          "available_unique_prices": [
+            550000,
+            600000
+          ]
+        }
+      }
+    ],
+    "score": {
+      "average": 4.0,
+      "count": 1,
+      "replies": 2,
+      "breakdown": {
+        "rate_1": 0,
+        "rate_2": 0,
+        "rate_3": 0,
+        "rate_4": 1,
+        "rate_5": 0
+      }
+    }
+  },
+  {
+    "title": "حمله به تایتان",
+    "url": "https://art.fidibo.com/theater/حمله-به-تایتان-18",
+    "event_id": 18,
+    "event_uuid": "cc4b3d99-c2eb-11f0-8a0f-fa163eccdccf",
+    "sessions": [
+      {
+        "id": 516,
+        "week_day": "چهارشنبه",
+        "day": 26,
+        "month": "آذر",
+        "time": "18:30",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 273,
+          "available_seats": 267,
+          "sold_seats_state_3": 2,
+          "locked_seats_state_4": 4,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 400000,
+          "available_max_price": 600000,
+          "available_unique_prices": [
+            400000,
+            500000,
+            550000,
+            600000
+          ]
+        }
+      },
+      {
+        "id": 517,
+        "week_day": "پنج‌شنبه",
+        "day": 27,
+        "month": "آذر",
+        "time": "20:00",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 273,
+          "available_seats": 266,
+          "sold_seats_state_3": 3,
+          "locked_seats_state_4": 4,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 400000,
+          "available_max_price": 600000,
+          "available_unique_prices": [
+            400000,
+            500000,
+            550000,
+            600000
+          ]
+        }
+      },
+      {
+        "id": 518,
+        "week_day": "جمعه",
+        "day": 28,
+        "month": "آذر",
+        "time": "20:00",
+        "is_sold_out": false,
+        "seat_summary": {
+          "total_seats_in_map": 273,
+          "available_seats": 269,
+          "sold_seats_state_3": 0,
+          "locked_seats_state_4": 4,
+          "other_state_seats": 0,
+          "currency": "تومان",
+          "available_min_price": 400000,
+          "available_max_price": 600000,
+          "available_unique_prices": [
+            400000,
+            500000,
+            550000,
+            600000
+          ]
+        }
+      }
+    ],
+    "score": {
+      "average": 3.2,
+      "count": 57,
+      "replies": 61,
+      "breakdown": {
+        "rate_1": 15,
+        "rate_2": 5,
+        "rate_3": 8,
+        "rate_4": 10,
+        "rate_5": 19
+      }
+    }
+  }
+]
