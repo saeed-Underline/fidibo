@@ -5,7 +5,7 @@ on:
   schedule:
     # Every day at 09:00 Rome time ~= 08:00 UTC in winter, 07:00 UTC in summer.
     # If you want exact local-time scheduling year-round, pick your preferred UTC time.
-    - cron: "9 * * * *"
+    #- cron: "9 * * * *"
 
 jobs:
   run:
