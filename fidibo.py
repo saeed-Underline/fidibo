@@ -91,6 +91,28 @@ REQUEST_TIMEOUT = 30
 STATE_SOLD = 3
 STATE_LOCKED = 4
 
+# "Front rows" alert config
+#   FIDIBO_FRONT_ROWS  -> highest row number considered "front" (default 3 => rows 1-3)
+#   FIDIBO_GROUND_ZONE -> zone name treated as the ground floor / orchestra
+FRONT_ROW_MAX = max(1, int(os.getenv("FIDIBO_FRONT_ROWS", "3")))
+GROUND_FLOOR_ZONE = os.getenv("FIDIBO_GROUND_ZONE", "همکف")
+
+
+def row_number(row: Any) -> Optional[int]:
+    """Parse the leading integer of a row label ('1', '12', 'A1' -> None, 'VIP' -> None)."""
+    if row is None:
+        return None
+    m = re.match(r"^\s*(\d+)\s*$", str(row))
+    return int(m.group(1)) if m else None
+
+
+def is_front_seat(info: dict[str, Any]) -> bool:
+    """A seat is 'front' when it's in the ground-floor zone and rows 1..FRONT_ROW_MAX."""
+    if info.get("zone") != GROUND_FLOOR_ZONE:
+        return False
+    n = row_number(info.get("row"))
+    return n is not None and 1 <= n <= FRONT_ROW_MAX
+
 
 # -------------------------
 # Data models
@@ -348,12 +370,15 @@ def seatmap_index(seatmap_json: dict) -> dict[int, dict[str, Any]]:
                 row_name = row.get("name")
                 for seat in (row.get("seats") or []):
                     sid = int(seat["id"])
+                    # The row container's name is empty in this API; the real row
+                    # label lives on each seat as "row_index".
+                    row_label = row_name if row_name not in (None, "") else seat.get("row_index")
                     idx[sid] = {
                         "seat_id": sid,
                         "display_name": seat.get("display_name"),
                         "zone": z_name,
                         "block": b_name,
-                        "row": row_name,
+                        "row": row_label,
                         "price": seat.get("price"),
                         "currency": seat.get("currency"),
                     }
@@ -377,6 +402,10 @@ def summarize_session_seats(seat_idx: dict[int, dict[str, Any]], states: dict[in
     prices = []
     currency = None
 
+    front_available = 0           # available seats in ground-floor rows 1..FRONT_ROW_MAX
+    available_zones: set[str] = set()
+    front_rows_available: set[int] = set()  # which front row numbers actually have seats
+
     for sid, info in seat_idx.items():
         st = states.get(sid, None)  # missing => available
         if st is None:
@@ -386,12 +415,16 @@ def summarize_session_seats(seat_idx: dict[int, dict[str, Any]], states: dict[in
                 prices.append(p)
             if currency is None and info.get("currency"):
                 currency = info.get("currency")
-        elif st == STATE_SOLD:
-            sold += 1
-        elif st == STATE_LOCKED:
-            locked += 1
-        else:
-            other += 1
+            zone = info.get("zone")
+            if zone:
+                available_zones.add(str(zone))
+            if is_front_seat(info):
+                front_available += 1
+                front_rows_available.add(row_number(info.get("row")))
+
+    # "Front rows only" => there ARE available seats and every one of them is a
+    # ground-floor front-row seat (nothing left anywhere else).
+    front_rows_only = available > 0 and front_available == available
 
     return {
         "total_seats_in_map": len(seat_idx),
@@ -403,6 +436,11 @@ def summarize_session_seats(seat_idx: dict[int, dict[str, Any]], states: dict[in
         "available_min_price": min(prices) if prices else None,
         "available_max_price": max(prices) if prices else None,
         "available_unique_prices": sorted(set(prices)) if prices else [],
+        # Front-row alert fields
+        "available_front_seats": front_available,
+        "front_rows_only": front_rows_only,
+        "front_rows_available": sorted(front_rows_available),
+        "available_zones": sorted(available_zones),
     }
 
 
@@ -567,6 +605,47 @@ def telegram_send_many(text: str, max_len: int = 3500) -> None:
         telegram_send("\n".join(buf))
 
 
+def _fmt_front_rows(seat: dict[str, Any]) -> str:
+    rows = seat.get("front_rows_available") or []
+    return ", ".join(str(r) for r in rows)
+
+
+def build_front_row_alert(shows: list[ShowInfo]) -> list[str]:
+    """Lines highlighting sessions whose only available seats are front rows."""
+    hits: list[tuple[ShowInfo, SessionInfo]] = []
+    for show in shows:
+        for sess in show.sessions:
+            if (sess.seat_summary or {}).get("front_rows_only"):
+                hits.append((show, sess))
+
+    if not hits:
+        return []
+
+    lines = [
+        f"🚨 <b>Front-row-only sessions</b> (rows 1–{FRONT_ROW_MAX}, {GROUND_FLOOR_ZONE})",
+        f"Only the front rows are left in <b>{len(hits)}</b> session(s):",
+        "",
+    ]
+    for show, sess in hits:
+        seat = sess.seat_summary or {}
+        av = seat.get("available_seats")
+        rows = _fmt_front_rows(seat)
+        minp = seat.get("available_min_price")
+        maxp = seat.get("available_max_price")
+        cur = seat.get("currency") or ""
+        price_txt = ""
+        if minp is not None and maxp is not None:
+            price_txt = f" | 💰 {minp}-{maxp} {cur}".rstrip()
+        lines.append(f"• <b>{show.title}</b>")
+        lines.append(
+            f"    {sess.week_day} {sess.day} {sess.month} {sess.time}"
+            f" | 🪑 {av} (rows {rows}){price_txt}"
+        )
+        lines.append(f"    <a href=\"{show.url}\">Open show</a>")
+    lines.append("")
+    return lines
+
+
 def build_telegram_summary(shows: list[ShowInfo]) -> str:
     if not shows:
         return "هیچ سانسِ قابل خریدی پیدا نشد."
@@ -575,6 +654,9 @@ def build_telegram_summary(shows: list[ShowInfo]) -> str:
     lines.append("🎭 <b>Fidibo Art Summary</b>")
     lines.append(f"✅ Shows with available sessions: <b>{len(shows)}</b>")
     lines.append("")
+
+    # Highlight front-row-only sessions up top so the alert is the first thing seen.
+    lines.extend(build_front_row_alert(shows))
 
     for idx, show in enumerate(shows, start=1):
         score_txt = ""
@@ -600,7 +682,9 @@ def build_telegram_summary(shows: list[ShowInfo]) -> str:
             if av is not None:
                 seat_txt = f" | 🪑 {av}"
                 if minp is not None and maxp is not None:
-                    seat_txt += f" | 💰 {minp}-{maxp} {cur}".strip()
+                    seat_txt += f" | 💰 {minp}-{maxp} {cur}".rstrip()
+            if seat.get("front_rows_only"):
+                seat_txt += f" | 🎯 front rows only ({_fmt_front_rows(seat)})"
 
             lines.append(f"    - {sess.week_day} {sess.day} {sess.month} {sess.time}{seat_txt}")
 
