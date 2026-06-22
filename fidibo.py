@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Fidibo Art scraper (NO Selenium)
+Fidibo Art scraper (NO Selenium) — concurrent edition
+
 - Reads the main page (art.fidibo.com) and collects show URLs
 - For each show:
   - Extracts event_id from URL (...-20)
@@ -13,15 +14,26 @@ Fidibo Art scraper (NO Selenium)
   - For each remaining session:
       - Fetch seatmap (seat metadata)
       - Fetch seat states (paginated)
-      - Availability rule (per your requirement):
+      - Availability rule:
           state=3 => SOLD
           state=4 => LOCKED
           if seat_id not present in states response => AVAILABLE
       - Produces availability + price stats per session
 
-Outputs:
-- Prints JSON to stdout
-- Saves fidibo_art_shows.json
+Performance notes
+-----------------
+All network work is I/O bound, so the previous fully-sequential version spent
+almost all of its wall-clock time waiting on round-trips. This version:
+  * reuses a single pooled, retrying requests.Session (keep-alive + backoff),
+  * fans show fetches out across a thread pool,
+  * fans per-session seat lookups out across the same pool, and
+  * pulls seat-state pages in larger chunks (fewer round-trips).
+Output (stdout JSON, fidibo_art_shows.json, Telegram summary) is unchanged.
+
+Tunables via environment:
+  FIDIBO_WORKERS       -> thread pool size (default 16)
+  FIDIBO_SEAT_LIMIT    -> seat-states page size (default 200)
+  FIDIBO_MAX_SHOWS     -> cap number of shows processed (0 = no cap; for testing)
 """
 
 from __future__ import annotations
@@ -29,11 +41,21 @@ from __future__ import annotations
 import json
 import re
 import os
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Any
 from urllib.parse import urljoin
 
 import requests
+from requests.adapters import HTTPAdapter
+
+try:  # urllib3 ships with requests; import location is stable in practice
+    from urllib3.util.retry import Retry
+except Exception:  # pragma: no cover - extremely defensive fallback
+    Retry = None  # type: ignore
+
 from bs4 import BeautifulSoup
 
 
@@ -59,7 +81,13 @@ HEADERS = {
     "Referer": "https://art.fidibo.com/",
 }
 
-# Seat state rules (per your instruction)
+# Concurrency / paging tunables
+WORKERS = max(1, int(os.getenv("FIDIBO_WORKERS", "16")))
+SEAT_PAGE_LIMIT = max(1, int(os.getenv("FIDIBO_SEAT_LIMIT", "200")))
+MAX_SHOWS = max(0, int(os.getenv("FIDIBO_MAX_SHOWS", "0")))
+REQUEST_TIMEOUT = 30
+
+# Seat state rules
 STATE_SOLD = 3
 STATE_LOCKED = 4
 
@@ -98,10 +126,42 @@ class ShowInfo:
 
 
 # -------------------------
-# HTTP helpers
+# HTTP session / helpers
 # -------------------------
+def build_session() -> requests.Session:
+    """
+    A single pooled session shared across worker threads.
+
+    requests.Session is safe for concurrent GETs as long as the underlying
+    connection pool is sized for the worker count, so we widen the pool and
+    attach a retry policy with exponential backoff for transient failures.
+    """
+    s = requests.Session()
+    s.headers.update(HEADERS)
+
+    adapter_kwargs: dict[str, Any] = {
+        "pool_connections": WORKERS,
+        "pool_maxsize": WORKERS * 2,
+    }
+    if Retry is not None:
+        adapter_kwargs["max_retries"] = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "POST"}),
+            raise_on_status=False,
+        )
+
+    adapter = HTTPAdapter(**adapter_kwargs)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+
 def http_get(session: requests.Session, url: str, *, params: dict | None = None) -> requests.Response:
-    r = session.get(url, headers=HEADERS, timeout=30, allow_redirects=True, params=params)
+    r = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True, params=params)
     r.raise_for_status()
     return r
 
@@ -152,24 +212,25 @@ def extract_title_from_html(html: str, fallback: str) -> str:
     return fallback
 
 
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+
+
 def extract_event_uuid_from_html(html: str) -> Optional[str]:
     """
-    Best-effort UUID extraction. If your show pages don’t include it,
-    you can also hardcode mapping event_id->uuid or discover the API that provides it.
+    Best-effort UUID extraction. If show pages don't include it, you can also
+    hardcode an event_id->uuid mapping or discover the API that provides it.
     """
-    uuid_re = re.compile(
-        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
-        re.IGNORECASE,
-    )
-
-    m = uuid_re.search(html)
+    m = _UUID_RE.search(html)
     if m:
         return m.group(0)
 
     soup = BeautifulSoup(html, "html.parser")
     for script in soup.find_all("script"):
         txt = script.string or script.get_text() or ""
-        m2 = uuid_re.search(txt)
+        m2 = _UUID_RE.search(txt)
         if m2:
             return m2.group(0)
 
@@ -236,17 +297,16 @@ def fetch_seatmap(session: requests.Session, session_id: int) -> Optional[dict]:
 def fetch_seat_states(session: requests.Session, session_id: int) -> dict[int, int]:
     """
     Returns {seat_id: state} with pagination.
-    Your rule:
       state=3 => sold
       state=4 => locked
       missing seat_id => available
     """
     states: dict[int, int] = {}
     page = 1
-    limit = 50
+    limit = SEAT_PAGE_LIMIT
+    url = SEAT_STATES_API.format(session_id=session_id)
 
     while True:
-        url = SEAT_STATES_API.format(session_id=session_id)
         resp = http_get(session, url, params={"page": page, "limit": limit})
         data = safe_json(resp, f"seat_states session_id={session_id} page={page}")
         if not data:
@@ -267,7 +327,7 @@ def fetch_seat_states(session: requests.Session, session_id: int) -> dict[int, i
 
 
 # -------------------------
-# Seat processing (your rules)
+# Seat processing
 # -------------------------
 def seatmap_index(seatmap_json: dict) -> dict[int, dict[str, Any]]:
     """
@@ -302,7 +362,7 @@ def seatmap_index(seatmap_json: dict) -> dict[int, dict[str, Any]]:
 
 def summarize_session_seats(seat_idx: dict[int, dict[str, Any]], states: dict[int, int]) -> dict[str, Any]:
     """
-    Your availability logic:
+    Availability logic:
       - if seat_id not in states => AVAILABLE
       - if state=3 => SOLD
       - if state=4 => LOCKED
@@ -359,59 +419,87 @@ def build_session_seat_summary(session: requests.Session, session_id: int) -> Op
 
 
 # -------------------------
+# Per-show pipeline (runs in a worker thread)
+# -------------------------
+def process_show(session: requests.Session, show_url: str) -> Optional[ShowInfo]:
+    """
+    Fetch one show end-to-end. Seat summaries for the show's sessions are
+    themselves fanned out so a show with many sessions doesn't serialize.
+    Returns None when the show has no buyable sessions or on hard failure.
+    """
+    event_id = extract_event_id(show_url)
+    if not event_id:
+        return None
+
+    try:
+        show_html = http_get(session, show_url).text
+        title = extract_title_from_html(show_html, fallback=show_url)
+
+        sessions = fetch_sessions(session, event_id)
+        # Remove sold-out sessions
+        sessions = [sess for sess in sessions if not sess.is_sold_out]
+        if not sessions:
+            return None
+
+        # Score (best-effort; may be None if UUID isn't present in HTML)
+        event_uuid = extract_event_uuid_from_html(show_html)
+        score = fetch_score(session, event_uuid) if event_uuid else None
+
+        # Seat availability for each remaining session, concurrently.
+        if len(sessions) == 1:
+            sessions[0].seat_summary = build_session_seat_summary(session, sessions[0].id)
+        else:
+            seat_workers = min(len(sessions), WORKERS)
+            with ThreadPoolExecutor(max_workers=seat_workers) as pool:
+                futs = {
+                    pool.submit(build_session_seat_summary, session, sess.id): sess
+                    for sess in sessions
+                }
+                for fut in as_completed(futs):
+                    sess = futs[fut]
+                    try:
+                        sess.seat_summary = fut.result()
+                    except Exception as e:
+                        print(f"[WARN] seat summary failed session_id={sess.id} err={e}")
+                        sess.seat_summary = None
+
+        return ShowInfo(
+            title=title,
+            url=show_url,
+            event_id=event_id,
+            event_uuid=event_uuid,
+            sessions=sessions,
+            score=score,
+        )
+
+    except Exception as e:
+        print(f"[WARN] Failed show_url={show_url} event_id={event_id} err={e}")
+        return None
+
+
+# -------------------------
 # Main scrape
 # -------------------------
 def scrape() -> list[ShowInfo]:
-    with requests.Session() as s:
+    with build_session() as s:
         home_html = http_get(s, MAIN_URL).text
         show_urls = get_home_show_urls(home_html)
+        if MAX_SHOWS:
+            show_urls = show_urls[:MAX_SHOWS]
+
+        print(f"[INFO] Discovered {len(show_urls)} show URLs; fetching with {WORKERS} workers.")
 
         shows: list[ShowInfo] = []
-
-        for show_url in show_urls:
-            event_id = extract_event_id(show_url)
-            if not event_id:
-                continue
-
-            try:
-                show_html = http_get(s, show_url).text
-                title = extract_title_from_html(show_html, fallback=show_url)
-
-                # Sessions
-                sessions = fetch_sessions(s, event_id)
-
-                # Remove sold-out sessions (per your request)
-                sessions = [sess for sess in sessions if not sess.is_sold_out]
-
-                # Skip shows with no available sessions
-                if not sessions:
-                    continue
-
-                # Score (best-effort; may be None if UUID isn't present in HTML)
-                event_uuid = extract_event_uuid_from_html(show_html)
-                score = fetch_score(s, event_uuid) if event_uuid else None
-
-                # For each remaining session, attach seat availability summary
-                for sess in sessions:
-                    sess.seat_summary = build_session_seat_summary(s, sess.id)
-
-                shows.append(
-                    ShowInfo(
-                        title=title,
-                        url=show_url,
-                        event_id=event_id,
-                        event_uuid=event_uuid,
-                        sessions=sessions,
-                        score=score,
-                    )
-                )
-
-            except Exception as e:
-                print(f"[WARN] Failed show_url={show_url} event_id={event_id} err={e}")
-                continue
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            futs = {pool.submit(process_show, s, url): url for url in show_urls}
+            for fut in as_completed(futs):
+                show = fut.result()
+                if show is not None:
+                    shows.append(show)
 
         return shows
-    
+
+
 def show_bayes_score(show: ShowInfo, *, prior_mean: float = 3.5, prior_weight: int = 20) -> float:
     if not show.score or show.score.average is None:
         return 0.0  # unrated shows go to the bottom
@@ -421,6 +509,7 @@ def show_bayes_score(show: ShowInfo, *, prior_mean: float = 3.5, prior_weight: i
         prior_mean=prior_mean,
         prior_weight=prior_weight,
     )
+
 
 def bayesian_rating(raw_avg: float | None, votes: int, *, prior_mean: float = 3.5, prior_weight: int = 20) -> float | None:
     """
@@ -436,7 +525,14 @@ def bayesian_rating(raw_avg: float | None, votes: int, *, prior_mean: float = 3.
     return (v * R + m * C) / (v + m)
 
 
+# -------------------------
+# Telegram
+# -------------------------
 def telegram_send(text: str) -> None:
+    if not TELEGRAM_BOT_TOKEN or "PUT_YOUR" in TELEGRAM_BOT_TOKEN:
+        print("[WARN] Telegram token not set, skipping send.")
+        return
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
@@ -469,21 +565,6 @@ def telegram_send_many(text: str, max_len: int = 3500) -> None:
 
     if buf:
         telegram_send("\n".join(buf))
-
-def telegram_send(text: str) -> None:
-    if not TELEGRAM_BOT_TOKEN or "PUT_YOUR" in TELEGRAM_BOT_TOKEN:
-        print("[WARN] Telegram token not set, skipping send.")
-        return
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-    r = requests.post(TELEGRAM_API, data=payload, timeout=30)
-    if r.status_code != 200:
-        print("[WARN] Telegram send failed:", r.status_code, r.text[:300])
 
 
 def build_telegram_summary(shows: list[ShowInfo]) -> str:
@@ -527,7 +608,25 @@ def build_telegram_summary(shows: list[ShowInfo]) -> str:
 
     return "\n".join(lines)
 
+
+def _force_utf8_stdio() -> None:
+    """
+    The JSON we print contains Persian text. On some consoles (notably Windows
+    cp1252) that raises UnicodeEncodeError; force UTF-8 so the script runs the
+    same everywhere.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8")
+            except Exception:
+                pass
+
+
 def main():
+    _force_utf8_stdio()
+    started = time.perf_counter()
     shows = scrape()
     # SORT by Bayesian rating (descending)
     shows.sort(key=lambda s: show_bayes_score(s), reverse=True)
@@ -538,7 +637,9 @@ def main():
     with open("fidibo_art_shows.json", "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    print(f"\nSaved fidibo_art_shows.json (shows={len(payload)})")
+    elapsed = time.perf_counter() - started
+    print(f"\nSaved fidibo_art_shows.json (shows={len(payload)}) in {elapsed:.1f}s")
+
     summary = build_telegram_summary(shows)
     telegram_send_many(summary)
     print("Sent Telegram summary.")
