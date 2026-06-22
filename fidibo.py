@@ -539,7 +539,6 @@ def main():
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
     print(f"\nSaved fidibo_art_shows.json (shows={len(payload)})")
-    # Send Telegram summary
     summary = build_telegram_summary(shows)
     telegram_send_many(summary)
     print("Sent Telegram summary.")
