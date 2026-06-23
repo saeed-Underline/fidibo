@@ -693,6 +693,15 @@ def build_telegram_summary(shows: list[ShowInfo]) -> str:
     return "\n".join(lines)
 
 
+def total_front_available(shows: list[ShowInfo]) -> int:
+    """Total available ground-floor front-row seats across all sessions."""
+    return sum(
+        int((sess.seat_summary or {}).get("available_front_seats") or 0)
+        for show in shows
+        for sess in show.sessions
+    )
+
+
 def _force_utf8_stdio() -> None:
     """
     The JSON we print contains Persian text. On some consoles (notably Windows
@@ -724,9 +733,14 @@ def main():
     elapsed = time.perf_counter() - started
     print(f"\nSaved fidibo_art_shows.json (shows={len(payload)}) in {elapsed:.1f}s")
 
-    summary = build_telegram_summary(shows)
-    telegram_send_many(summary)
-    print("Sent Telegram summary.")
+    # Only notify when at least one ground-floor front-row seat is available.
+    front_total = total_front_available(shows)
+    if front_total > 0:
+        summary = build_telegram_summary(shows)
+        telegram_send_many(summary)
+        print(f"Sent Telegram summary ({front_total} front-row seat(s) available).")
+    else:
+        print("No front-row seats available; skipping Telegram send.")
 
 
 if __name__ == "__main__":
