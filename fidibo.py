@@ -82,7 +82,7 @@ HEADERS = {
 }
 
 # Concurrency / paging tunables
-WORKERS = max(1, int(os.getenv("FIDIBO_WORKERS", "16")))
+WORKERS = max(1, int(os.getenv("FIDIBO_WORKERS", "8")))
 SEAT_PAGE_LIMIT = max(1, int(os.getenv("FIDIBO_SEAT_LIMIT", "200")))
 MAX_SHOWS = max(0, int(os.getenv("FIDIBO_MAX_SHOWS", "0")))
 REQUEST_TIMEOUT = 30
