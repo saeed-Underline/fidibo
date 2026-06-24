@@ -16,4 +16,3 @@
 # مجلس بازپس گرفتن صحنه
 
 50    # خون بس
-46    # سر انقلاب — TEMPORARY: delivery test, remove after
