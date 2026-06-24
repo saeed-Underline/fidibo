@@ -755,8 +755,9 @@ def load_favorites(path: str = FAVORITES_FILE) -> list[str]:
     favorites: list[str] = []
     with open(path, encoding="utf-8") as f:
         for raw in f:
-            line = raw.strip()
-            if not line or line.startswith("#"):
+            # Strip inline comments too (titles never contain '#').
+            line = raw.split("#", 1)[0].strip()
+            if not line:
                 continue
             favorites.append(line)
     return favorites
