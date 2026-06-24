@@ -665,19 +665,33 @@ def build_front_row_alert(shows: list[ShowInfo]) -> list[str]:
     return lines
 
 
-def build_telegram_summary(shows: list[ShowInfo]) -> str:
-    if not shows:
-        return "هیچ سانسِ قابل خریدی پیدا نشد."
+def session_front_seats(sess: SessionInfo) -> int:
+    return int((sess.seat_summary or {}).get("available_front_seats") or 0)
 
+
+def build_telegram_summary(shows: list[ShowInfo]) -> str:
+    # The message is about front rows, so only include shows/sessions that
+    # actually have front-row availability. A show with buyable seats only in
+    # back rows / balcony (e.g. خون بس) is intentionally left out.
+    relevant: list[tuple[ShowInfo, list[SessionInfo]]] = []
+    for show in shows:
+        front_sessions = [s for s in show.sessions if session_front_seats(s) > 0]
+        if front_sessions:
+            relevant.append((show, front_sessions))
+
+    if not relevant:
+        return f"در حال حاضر صندلیِ ردیف‌های جلو (۱ تا {FRONT_ROW_MAX}) موجود نیست."
+
+    total = total_front_available(shows)
     lines = []
-    lines.append("🎭 <b>Fidibo Art Summary</b>")
-    lines.append(f"✅ Shows with available sessions: <b>{len(shows)}</b>")
+    lines.append(f"🎯 <b>Fidibo — front-row seats available</b> (rows 1–{FRONT_ROW_MAX}, {GROUND_FLOOR_ZONE})")
+    lines.append(f"🪑 <b>{total}</b> front-row seat(s) across <b>{len(relevant)}</b> show(s)")
     lines.append("")
 
-    # Highlight front-row-only sessions up top so the alert is the first thing seen.
+    # Highlight "only front rows left" sessions up top (the urgent subset).
     lines.extend(build_front_row_alert(shows))
 
-    for idx, show in enumerate(shows, start=1):
+    for idx, (show, front_sessions) in enumerate(relevant, start=1):
         score_txt = ""
         if show.score and show.score.average is not None:
             raw = show.score.average
@@ -689,21 +703,23 @@ def build_telegram_summary(shows: list[ShowInfo]) -> str:
         lines.append(f"{idx}. <b>{show.title}</b>{score_txt}")
         lines.append(f"  <a href=\"{show.url}\">Open show</a>")
 
-        # ALL sessions (already filtered to not sold-out)
-        for sess in show.sessions:
+        # Only sessions that have front-row availability.
+        for sess in front_sessions:
             seat = sess.seat_summary or {}
+            front = session_front_seats(sess)
             av = seat.get("available_seats")
+            rows = _fmt_front_rows(seat)
             minp = seat.get("available_min_price")
             maxp = seat.get("available_max_price")
             cur = seat.get("currency") or ""
 
-            seat_txt = ""
+            seat_txt = f" | 🎯 {front} front (rows {rows})"
             if av is not None:
-                seat_txt = f" | 🪑 {av}"
-                if minp is not None and maxp is not None:
-                    seat_txt += f" | 💰 {minp}-{maxp} {cur}".rstrip()
+                seat_txt += f" | 🪑 {av} total"
+            if minp is not None and maxp is not None:
+                seat_txt += f" | 💰 {minp}-{maxp} {cur}".rstrip()
             if seat.get("front_rows_only"):
-                seat_txt += f" | 🎯 front rows only ({_fmt_front_rows(seat)})"
+                seat_txt += " | ⚠️ front rows only"
 
             lines.append(f"    - {sess.week_day} {sess.day} {sess.month} {sess.time}{seat_txt}")
 
