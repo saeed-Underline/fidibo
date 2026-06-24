@@ -71,6 +71,9 @@ SEATMAP_API = "https://api.fidibo.com/bilito/api/client/v1/sessions/{session_id}
 SEAT_STATES_API = "https://api.fidibo.com/bilito/api/client/v1/sessions/{session_id}/seats/states"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# Optional second channel that only receives alerts for favorite shows.
+TELEGRAM_FAVORITES_CHAT_ID = os.getenv("TELEGRAM_FAVORITES_CHAT_ID", "")
+FAVORITES_FILE = os.getenv("FIDIBO_FAVORITES_FILE", "favorite_shows.txt")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
 HEADERS = {
@@ -585,13 +588,17 @@ def bayesian_rating(raw_avg: float | None, votes: int, *, prior_mean: float = 3.
 # -------------------------
 # Telegram
 # -------------------------
-def telegram_send(text: str) -> None:
+def telegram_send(text: str, chat_id: Optional[str] = None) -> None:
+    chat_id = chat_id or TELEGRAM_CHAT_ID
     if not TELEGRAM_BOT_TOKEN or "PUT_YOUR" in TELEGRAM_BOT_TOKEN:
         print("[WARN] Telegram token not set, skipping send.")
         return
+    if not chat_id:
+        print("[WARN] Telegram chat_id not set, skipping send.")
+        return
 
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
@@ -601,7 +608,7 @@ def telegram_send(text: str) -> None:
         print("[WARN] Telegram send failed:", r.status_code, r.text[:300])
 
 
-def telegram_send_many(text: str, max_len: int = 3500) -> None:
+def telegram_send_many(text: str, chat_id: Optional[str] = None, max_len: int = 3500) -> None:
     """
     Telegram limit is ~4096 chars; we chunk smaller for safety.
     Splits on line boundaries.
@@ -613,7 +620,7 @@ def telegram_send_many(text: str, max_len: int = 3500) -> None:
     for line in lines:
         add = len(line) + 1
         if size + add > max_len and buf:
-            telegram_send("\n".join(buf))
+            telegram_send("\n".join(buf), chat_id)
             buf = [line]
             size = len(line) + 1
         else:
@@ -621,7 +628,7 @@ def telegram_send_many(text: str, max_len: int = 3500) -> None:
             size += add
 
     if buf:
-        telegram_send("\n".join(buf))
+        telegram_send("\n".join(buf), chat_id)
 
 
 def _fmt_front_rows(seat: dict[str, Any]) -> str:
@@ -737,6 +744,44 @@ def total_front_available(shows: list[ShowInfo]) -> int:
     )
 
 
+def load_favorites(path: str = FAVORITES_FILE) -> list[str]:
+    """
+    Read favorite show identifiers, one per line. Blank lines and lines starting
+    with '#' are ignored. Each identifier may be an event id (e.g. '46'), part
+    of the show title, or part of the show URL.
+    """
+    if not os.path.exists(path):
+        return []
+    favorites: list[str] = []
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            favorites.append(line)
+    return favorites
+
+
+def show_matches_favorite(show: ShowInfo, favorites: list[str]) -> bool:
+    """Match a favorite line against the show's event id, title, or URL."""
+    title = (show.title or "").casefold()
+    url = (show.url or "").casefold()
+    for fav in favorites:
+        f = fav.strip()
+        if not f:
+            continue
+        if f.isdigit() and int(f) == show.event_id:
+            return True
+        fl = f.casefold()
+        if fl and (fl in title or fl in url):
+            return True
+    return False
+
+
+def favorite_shows(shows: list[ShowInfo], favorites: list[str]) -> list[ShowInfo]:
+    return [s for s in shows if show_matches_favorite(s, favorites)]
+
+
 def _force_utf8_stdio() -> None:
     """
     The JSON we print contains Persian text. On some consoles (notably Windows
@@ -768,7 +813,7 @@ def main():
     elapsed = time.perf_counter() - started
     print(f"\nSaved fidibo_art_shows.json (shows={len(payload)}) in {elapsed:.1f}s")
 
-    # Only notify when at least one ground-floor front-row seat is available.
+    # Main channel: notify when any ground-floor front-row seat is available.
     front_total = total_front_available(shows)
     if front_total > 0:
         summary = build_telegram_summary(shows)
@@ -776,6 +821,23 @@ def main():
         print(f"Sent Telegram summary ({front_total} front-row seat(s) available).")
     else:
         print("No front-row seats available; skipping Telegram send.")
+
+    # Favorites channel: notify only for favorite shows with front-row seats.
+    favorites = load_favorites()
+    if not favorites:
+        print(f"No favorites in {FAVORITES_FILE}; skipping favorites channel.")
+    elif not TELEGRAM_FAVORITES_CHAT_ID:
+        print("TELEGRAM_FAVORITES_CHAT_ID not set; skipping favorites channel.")
+    else:
+        favs = favorite_shows(shows, favorites)
+        fav_front = total_front_available(favs)
+        if fav_front > 0:
+            fav_summary = build_telegram_summary(favs)
+            telegram_send_many(fav_summary, TELEGRAM_FAVORITES_CHAT_ID)
+            matched = ", ".join(s.title for s in favs)
+            print(f"Sent favorites summary ({fav_front} front-row seat(s)): {matched}")
+        else:
+            print(f"Favorites matched {len(favs)} show(s) but none have front-row seats; skipping.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,16 @@
+# Favorite shows — one identifier per line.
+# The favorites Telegram channel is notified only when a show listed here has
+# front-row seats (ground-floor rows 1-3) available in any session.
+#
+# Each line may be:
+#   - an event id (the number at the end of the show URL), e.g.  46
+#   - part of the show title, e.g.  سر انقلاب
+#   - part of the show URL, e.g.  سر-انقلاب-46
+#
+# Lines starting with '#' and blank lines are ignored. Matching is
+# case-insensitive and uses substring match for titles/URLs.
+#
+# Examples (remove the leading '#' to activate):
+# 46
+# سر انقلاب
+# مجلس بازپس گرفتن صحنه
