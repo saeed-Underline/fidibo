@@ -97,6 +97,12 @@ STATE_LOCKED = 4
 FRONT_ROW_MAX = max(1, int(os.getenv("FIDIBO_FRONT_ROWS", "3")))
 GROUND_FLOOR_ZONE = os.getenv("FIDIBO_GROUND_ZONE", "همکف")
 
+# Sessions carry a status; only these are actually buyable. Past sessions come
+# back as "finished" and must be dropped or they show phantom availability.
+# Comma-separated env override (FIDIBO_SELLABLE_STATUSES); empty string = keep all.
+_RAW_SELLABLE = os.getenv("FIDIBO_SELLABLE_STATUSES", "live")
+SELLABLE_STATUSES = {x.strip().lower() for x in _RAW_SELLABLE.split(",") if x.strip()}
+
 
 def row_number(row: Any) -> Optional[int]:
     """Parse the leading integer of a row label ('1', '12', 'A1' -> None, 'VIP' -> None)."""
@@ -125,6 +131,7 @@ class SessionInfo:
     month: str
     time: str
     is_sold_out: bool
+    status: str = ""
     # session-level availability summary (computed from seatmap+states)
     seat_summary: Optional[dict[str, Any]] = None
 
@@ -279,9 +286,21 @@ def fetch_sessions(session: requests.Session, event_id: int) -> list[SessionInfo
                 month=str(r.get("month") or ""),
                 time=str(r.get("time") or ""),
                 is_sold_out=bool(r.get("is_sold_out")),
+                status=str(r.get("status") or ""),
             )
         )
     return out
+
+
+def is_sellable_session(sess: SessionInfo) -> bool:
+    """True if a session is currently buyable (not sold out, not finished/past)."""
+    if sess.is_sold_out:
+        return False
+    if not SELLABLE_STATUSES:
+        return True
+    if not sess.status:
+        return True  # be defensive if the API stops returning status
+    return sess.status.lower() in SELLABLE_STATUSES
 
 
 def fetch_score(session: requests.Session, event_uuid: str) -> Optional[ScoreInfo]:
@@ -474,8 +493,8 @@ def process_show(session: requests.Session, show_url: str) -> Optional[ShowInfo]
         title = extract_title_from_html(show_html, fallback=show_url)
 
         sessions = fetch_sessions(session, event_id)
-        # Remove sold-out sessions
-        sessions = [sess for sess in sessions if not sess.is_sold_out]
+        # Keep only buyable sessions (drops sold-out and past/"finished" ones)
+        sessions = [sess for sess in sessions if is_sellable_session(sess)]
         if not sessions:
             return None
 
