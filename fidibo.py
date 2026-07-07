@@ -95,9 +95,9 @@ STATE_SOLD = 3
 STATE_LOCKED = 4
 
 # "Front rows" alert config
-#   FIDIBO_FRONT_ROWS  -> highest row number considered "front" (default 3 => rows 1-3)
+#   FIDIBO_FRONT_ROWS  -> highest row number considered "front" (default 6 => rows 1-6)
 #   FIDIBO_GROUND_ZONE -> zone name treated as the ground floor / orchestra
-FRONT_ROW_MAX = max(1, int(os.getenv("FIDIBO_FRONT_ROWS", "3")))
+FRONT_ROW_MAX = max(1, int(os.getenv("FIDIBO_FRONT_ROWS", "6")))
 GROUND_FLOOR_ZONE = os.getenv("FIDIBO_GROUND_ZONE", "همکف")
 
 # Sessions carry a status; only these are actually buyable. Past sessions come
