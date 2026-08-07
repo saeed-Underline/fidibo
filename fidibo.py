@@ -38,6 +38,7 @@ Tunables via environment:
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import os
@@ -45,11 +46,19 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 from typing import Optional, Any
 from urllib.parse import urljoin
 
 import requests
 from requests.adapters import HTTPAdapter
+
+try:  # Optional: only needed for the Gemini-researched show reviews
+    from google import genai
+    from google.genai import types as genai_types, errors as genai_errors
+except ImportError:  # scraper still runs without the package / feature
+    genai = None  # type: ignore
+    genai_types = genai_errors = None  # type: ignore
 
 try:  # urllib3 ships with requests; import location is stable in practice
     from urllib3.util.retry import Retry
@@ -74,6 +83,17 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # Optional second channel that only receives alerts for favorite shows.
 TELEGRAM_FAVORITES_CHAT_ID = os.getenv("TELEGRAM_FAVORITES_CHAT_ID", "")
 FAVORITES_FILE = os.getenv("FIDIBO_FAVORITES_FILE", "favorite_shows.txt")
+
+# Optional: enables Gemini-researched public-opinion remarks in the report.
+# When unset, the job runs normally without remarks.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# Diagnosed Jul 2026 (Tiwall repo): on free-tier keys, Search grounding 429s on
+# every Gemini 3.x model; 2.5-flash is the only model that still grounds
+# successfully (grandfathered for existing users).
+GEMINI_MODEL = "gemini-2.5-flash"
+INFORMATION_FILE = "information.txt"   # persistent show-feedback bank, committed to the repo
+INFO_MAX_AGE_DAYS = 14                 # re-research a show after this many days
+NO_FEEDBACK_MARKER = "یافت نشد"        # Gemini's "no reliable feedback" fallback
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 TELEGRAM_PHOTO_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
 TELEGRAM_CAPTION_LIMIT = 1024  # Telegram caps photo captions at 1024 chars
@@ -621,6 +641,196 @@ def bayesian_rating(raw_avg: float | None, votes: int, *, prior_mean: float = 3.
     return (v * R + m * C) / (v + m)
 
 
+def compute_trust(score: Optional[ScoreInfo]) -> Optional[float]:
+    """
+    Turns rating stats into a 0..1 trust factor for the rate/reviews.
+    None = not enough data to judge; new shows are not punished for that.
+
+    Bought votes inflate the average but rarely the rest, so trust leans on:
+      - volume: how many people actually rated,
+      - replies: written opinions tend to accompany genuine ratings,
+      - spread: real audiences disagree; one dominant star bucket looks bought.
+    """
+    if not score or score.average is None or score.count < 5:
+        return None
+    volume = min(score.count / 100, 1.0)
+    replies = min(score.replies / 10, 1.0)
+    total = sum(score.breakdown.values()) or score.count
+    top_share = max(score.breakdown.values()) / total
+    # top_share <= 0.5 reads as a healthy spread; 1.0 (all votes in one bucket) as fake.
+    spread = min((1.0 - top_share) / 0.5, 1.0)
+    return 0.4 * volume + 0.3 * replies + 0.3 * spread
+
+
+# -------------------------
+# Show opinion research (Gemini API)
+# -------------------------
+def load_show_info() -> dict[str, dict]:
+    """Loads the persistent show-feedback bank.
+
+    Line format: "event_id | YYYY-MM-DD | remark". Hand-added lines may omit
+    the date ("event_id | remark") and are treated as researched today.
+    """
+    info: dict[str, dict] = {}
+    if not os.path.exists(INFORMATION_FILE):
+        return info
+    with open(INFORMATION_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split("|", 2)]
+            if len(parts) < 2:
+                continue
+            slug = parts[0]
+            date = None
+            if len(parts) >= 3:
+                try:
+                    date = datetime.strptime(parts[1], "%Y-%m-%d").date()
+                except ValueError:
+                    pass
+            if date is not None:
+                remark = parts[2]
+            else:
+                date = datetime.now().date()
+                remark = " | ".join(p for p in parts[1:] if p)
+            # "no feedback found" lines are misses, not answers — drop them so
+            # the show gets re-researched.
+            if slug and remark and NO_FEEDBACK_MARKER not in remark:
+                info[slug] = {"date": date, "remark": remark}
+    return info
+
+
+def save_show_info(info: dict[str, dict]) -> None:
+    lines = ["# Show feedback bank — format: event_id | researched date | remark", ""]
+    for slug in sorted(info, key=lambda x: int(x) if x.isdigit() else 0):
+        entry = info[slug]
+        lines.append(f"{slug} | {entry['date'].strftime('%Y-%m-%d')} | {entry['remark']}")
+    with open(INFORMATION_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def get_shows_info_batch(client: "genai.Client", shows: list[dict]) -> dict[str, str]:
+    """Asks Gemini (one request, with Google Search grounding) for a detailed
+    critical Persian remark on the public reception of each show. Each show
+    dict has slug/title/rating/votes. Returns {slug: remark}."""
+    listing_lines = []
+    for s in shows:
+        line = f"{s['slug']} | {s['title']}"
+        if s.get("rating"):
+            line += f" | امتیاز فیدیبو: {s['rating']:.1f} از 5 ({s.get('votes') or '?'} رای)"
+        listing_lines.append(line)
+    listing = "\n".join(listing_lines)
+    prompt = (
+        "نمایش‌های زیر هم‌اکنون در تهران روی صحنه هستند و بلیت آن‌ها در سایت فیدیبو (بیلیتو) فروخته می‌شود. "
+        "امتیاز واقعی هر نمایش در سایت فیدیبو هم داده شده است. "
+        "برای هر نمایش با جستجو در وب، بازخورد واقعی تماشاگران و منتقدان ایرانی را پیدا کن "
+        "(نقدها و نظرات در تیوال، فیدیبو، شبکه‌های اجتماعی و رسانه‌ها).\n"
+        "مانند یک منتقد تئاتر بی‌طرف و سخت‌گیر عمل کن:\n"
+        "- امتیاز داده‌شده را مبنا قرار بده و در جمله‌ات بیاور؛ با جستجو نقاط قوت و ضعف مشخص را پیدا کن.\n"
+        "- نقاط ضعف و نقدهای منفی را به همان اندازه نقاط قوت ذکر کن. "
+        "اگر بازخوردها متفاوت یا متوسط است، صادقانه بنویس نظرها دوپهلوست و ضعف اصلی را نام ببر.\n"
+        "- از صفت‌های تبلیغاتی و کلی مثل «عالی» و «بی‌نظیر» بدون استناد به نظر واقعی خودداری کن.\n"
+        "- فقط اگر هیچ نظر کیفی پیدا نکردی و امتیازی هم داده نشده، بنویس: بازخورد قابل اعتمادی یافت نشد.\n"
+        "پاسخ را دقیقاً در همین قالب بده: برای هر نمایش فقط یک خط، به شکل\n"
+        "شناسه | نقد فشرده در یک پاراگراف حداکثر ۵ تا ۶ جمله به فارسی؛ "
+        "هر جمله باید اطلاعات مهم بدهد: مهم‌ترین نقاط قوت (بازی‌ها، کارگردانی، متن، طراحی صحنه یا موسیقی)، "
+        "مهم‌ترین نقاط ضعف مشخص، و جمع‌بندی نظر تماشاگران و منتقدان. از حاشیه‌روی و تکرار خودداری کن\n"
+        "داخل نقد از علامت | استفاده نکن.\n"
+        "از همان شناسه عددی که داده شده استفاده کن و هیچ متن دیگری ننویس.\n\n"
+        f"فهرست نمایش‌ها:\n{listing}"
+    )
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+            ),
+        )
+        text = response.text or ""
+    except genai_errors.APIError as e:
+        print(f"[WARN] Batch opinion research failed: {e}")
+        return {}
+    except Exception as e:
+        print(f"[WARN] Batch opinion research unexpected error: {e}")
+        return {}
+
+    valid_slugs = {s["slug"] for s in shows}
+    results: dict[str, str] = {}
+    for line in text.splitlines():
+        if "|" not in line:
+            continue
+        slug, _, remark = line.partition("|")
+        # Grounded responses often decorate lines with markdown (e.g. "**slug**"
+        # or list bullets) — strip those from both ends before matching.
+        slug = slug.strip().strip("-*•`_ \t")
+        remark = " ".join(remark.replace("*", "").split())  # collapse md/whitespace
+        # A remark containing another show's "slug |" means the model ran
+        # several answers together on one line — banking it would store many
+        # reviews under one show. Treat it as a miss.
+        run_on = any(f"{other} |" in remark for other in valid_slugs if other != slug)
+        # "no feedback found" is a miss, not an answer — don't bank it for 14
+        # days; leave the show absent so the next run retries.
+        if slug in valid_slugs and remark and not run_on and NO_FEEDBACK_MARKER not in remark:
+            results[slug] = remark
+    missed = valid_slugs - set(results)
+    if missed:
+        print(f"[WARN] Batch opinion research got no answer for: {', '.join(sorted(missed))}")
+        # Log the raw reply so format drift is visible in the Actions log.
+        print(f"--- raw Gemini reply ({len(text)} chars) ---\n{text[:2000]}\n---")
+    return results
+
+
+def research_show_remarks(shows: list[ShowInfo]) -> dict[str, dict]:
+    """Ensures every given show has a fresh remark in the feedback bank
+    (researching missing/stale ones via Gemini) and returns the whole bank,
+    keyed by str(event_id). Stale entries keep showing until re-researched."""
+    show_info = load_show_info()
+    today = datetime.now().date()
+    missing = [
+        s for s in shows
+        if str(s.event_id) not in show_info
+        or (today - show_info[str(s.event_id)]["date"]).days > INFO_MAX_AGE_DAYS
+    ]
+    if not missing:
+        return show_info
+    if not GEMINI_API_KEY:
+        print("[INFO] GEMINI_API_KEY not set; skipping show opinion research.")
+        return show_info
+    if genai is None:
+        print("[WARN] google-genai package not installed; skipping show opinion research.")
+        return show_info
+
+    # Bounded timeout (ms): a hung API must not stall the job.
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=genai_types.HttpOptions(timeout=240_000),
+    )
+    payload = [
+        {
+            "slug": str(s.event_id),
+            "title": s.title,
+            "rating": s.score.average if s.score else None,
+            "votes": s.score.count if s.score else None,
+        }
+        for s in missing
+    ]
+    # Small batches: one call asked to write many detailed paragraphs gets
+    # truncated/mangled and most lines fail to parse.
+    got_any = False
+    for i in range(0, len(payload), 6):
+        chunk = payload[i:i + 6]
+        print(f"[INFO] Researching {len(chunk)} shows: {', '.join(c['slug'] for c in chunk)}")
+        new_remarks = get_shows_info_batch(client, chunk)
+        for slug, remark in new_remarks.items():
+            show_info[slug] = {"date": today, "remark": remark}
+        got_any = got_any or bool(new_remarks)
+    if got_any:
+        save_show_info(show_info)
+    return show_info
+
+
 # -------------------------
 # Telegram
 # -------------------------
@@ -751,16 +961,27 @@ def relevant_front_shows(shows: list[ShowInfo]) -> list[tuple[ShowInfo, list[Ses
     return relevant
 
 
-def build_show_block(idx: int, show: ShowInfo, front_sessions: list[SessionInfo]) -> str:
-    score_txt = ""
+def build_show_block(
+    idx: int,
+    show: ShowInfo,
+    front_sessions: list[SessionInfo],
+    remark: Optional[str] = None,
+) -> str:
+    # Header: rate | number of sessions matching this repo's criteria
+    # (front-row availability) | how much the rate/reviews can be trusted.
+    rate_txt = "—"
     if show.score and show.score.average is not None:
         raw = show.score.average
         v = show.score.count
         bayes = bayesian_rating(raw, v, prior_mean=3.5, prior_weight=20)
-        # show both raw and bayes so you can compare
-        score_txt = f" ⭐ raw {raw:.2f}/5 (v={v}) | bayes {bayes:.2f}/5"
+        rate_txt = f"{raw:.2f}/5 (bayes {bayes:.2f}, v={v})"
+    trust = compute_trust(show.score)
+    trust_txt = f"{trust:.0%}" if trust is not None else "—"
 
-    lines = [f"{idx}. <b>{show.title}</b>{score_txt}"]
+    lines = [f"{idx}. <b>{show.title}</b>"]
+    lines.append(f"⭐ {rate_txt} | 🗓️ {len(front_sessions)} session(s) | 🛡️ {trust_txt}")
+    if remark:
+        lines.append(f"💬 {html.escape(remark)}")
     lines.append(f"  <a href=\"{show.url}\">Open show</a>")
 
     # Only sessions that have front-row availability.
@@ -786,12 +1007,35 @@ def build_show_block(idx: int, show: ShowInfo, front_sessions: list[SessionInfo]
     return "\n".join(lines)
 
 
-def send_front_row_report(shows: list[ShowInfo], chat_id: Optional[str] = None) -> None:
+def _split_lines(text: str, limit: int) -> list[str]:
+    """Splits text into chunks under the limit, breaking at line boundaries."""
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            # A single line longer than the limit gets hard-cut
+            current = line[:limit]
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def send_front_row_report(
+    shows: list[ShowInfo],
+    chat_id: Optional[str] = None,
+    remarks: Optional[dict[str, dict]] = None,
+) -> None:
     """
     One header message with the totals and the front-rows-only alert, then one
     message per show topped with its poster (sent by URL, no local download)
-    and the details as the caption. Falls back to plain text when the show has
-    no image, the caption would exceed Telegram's limit, or the send fails.
+    and the details as the caption. Captions are limited to 1024 chars, so any
+    overflow (e.g. a long review remark) goes out as follow-up text messages.
+    Falls back to plain text when the show has no image or the send fails.
     """
     relevant = relevant_front_shows(shows)
     if not relevant:
@@ -807,10 +1051,15 @@ def send_front_row_report(shows: list[ShowInfo], chat_id: Optional[str] = None) 
     header.extend(build_front_row_alert(shows))
     telegram_send_many("\n".join(header), chat_id)
 
+    remarks = remarks or {}
     for idx, (show, front_sessions) in enumerate(relevant, start=1):
-        block = build_show_block(idx, show, front_sessions)
-        if show.image_url and len(block) <= TELEGRAM_CAPTION_LIMIT:
-            if telegram_send_photo(show.image_url, block, chat_id):
+        entry = remarks.get(str(show.event_id))
+        block = build_show_block(idx, show, front_sessions, entry["remark"] if entry else None)
+        if show.image_url:
+            chunks = _split_lines(block, TELEGRAM_CAPTION_LIMIT)
+            if telegram_send_photo(show.image_url, chunks[0], chat_id):
+                for chunk in chunks[1:]:
+                    telegram_send_many(chunk, chat_id)
                 continue
         telegram_send_many(block, chat_id)
 
@@ -894,10 +1143,15 @@ def main():
     elapsed = time.perf_counter() - started
     print(f"\nSaved fidibo_art_shows.json (shows={len(payload)}) in {elapsed:.1f}s")
 
+    # Opinion research: one batched Gemini call per 6 shows that will actually
+    # appear in the report and don't have fresh banked info yet.
+    reported = [show for show, _ in relevant_front_shows(shows)]
+    remarks = research_show_remarks(reported) if reported else {}
+
     # Main channel: notify when any ground-floor front-row seat is available.
     front_total = total_front_available(shows)
     if front_total > 0:
-        send_front_row_report(shows)
+        send_front_row_report(shows, remarks=remarks)
         print(f"Sent Telegram summary ({front_total} front-row seat(s) available).")
     else:
         print("No front-row seats available; skipping Telegram send.")
@@ -912,7 +1166,7 @@ def main():
         favs = favorite_shows(shows, favorites)
         fav_front = total_front_available(favs)
         if fav_front > 0:
-            send_front_row_report(favs, TELEGRAM_FAVORITES_CHAT_ID)
+            send_front_row_report(favs, TELEGRAM_FAVORITES_CHAT_ID, remarks=remarks)
             matched = ", ".join(s.title for s in favs)
             print(f"Sent favorites summary ({fav_front} front-row seat(s)): {matched}")
         else:

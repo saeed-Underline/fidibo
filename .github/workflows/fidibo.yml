@@ -11,6 +11,10 @@ jobs:
   run:
     runs-on: ubuntu-latest
 
+    # Needed to commit information.txt (show feedback bank) back to the repo
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,8 +34,23 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_FAVORITES_CHAT_ID: ${{ secrets.TELEGRAM_FAVORITES_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python fidibo.py
+
+      - name: Commit updated show information bank
+        run: |
+          git add information.txt
+          if git diff --cached --quiet; then
+            echo "No new show information."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Update information.txt (show feedback bank)"
+            # autostash: keeps the rebase safe if the run left anything in the tree
+            git pull --rebase --autostash origin main
+            git push
+          fi
 
       - name: Upload JSON artifact
         uses: actions/upload-artifact@v4

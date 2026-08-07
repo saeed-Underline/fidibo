@@ -1,0 +1,1 @@
+# Show feedback bank — format: event_id | researched date | remark
