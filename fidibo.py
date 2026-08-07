@@ -95,10 +95,14 @@ STATE_SOLD = 3
 STATE_LOCKED = 4
 
 # "Front rows" alert config
-#   FIDIBO_FRONT_ROWS  -> highest row number considered "front" (default 6 => rows 1-6)
-#   FIDIBO_GROUND_ZONE -> zone name treated as the ground floor / orchestra
+#   FIDIBO_FRONT_ROWS    -> highest row number considered "front" (default 6 => rows 1-6)
+#   FIDIBO_GROUND_ZONE   -> zone name treated as the ground floor / orchestra
+#   FIDIBO_FRONT_SECTIONS-> comma-separated section letters whose rows count as
+#                           front when labels look like 'A3' (default "A"; 'B1'
+#                           is the first row of a rear block, not the hall front)
 FRONT_ROW_MAX = max(1, int(os.getenv("FIDIBO_FRONT_ROWS", "6")))
 GROUND_FLOOR_ZONE = os.getenv("FIDIBO_GROUND_ZONE", "همکف")
+FRONT_SECTIONS = {x.strip().upper() for x in os.getenv("FIDIBO_FRONT_SECTIONS", "A").split(",") if x.strip()}
 
 # Sessions carry a status; only these are actually buyable. Past sessions come
 # back as "finished" and must be dropped or they show phantom availability.
@@ -107,20 +111,36 @@ _RAW_SELLABLE = os.getenv("FIDIBO_SELLABLE_STATUSES", "live")
 SELLABLE_STATUSES = {x.strip().lower() for x in _RAW_SELLABLE.split(",") if x.strip()}
 
 
-def row_number(row: Any) -> Optional[int]:
-    """Parse the leading integer of a row label ('1', '12', 'A1' -> None, 'VIP' -> None)."""
+_ROW_LABEL_RE = re.compile(r"^\s*([A-Za-z]?)\s*(\d+)\s*$")
+
+
+def row_parts(row: Any) -> tuple[str, Optional[int]]:
+    """Split a row label into (section, number): '12' -> ('', 12), 'A3' -> ('A', 3), 'VIP' -> ('', None)."""
     if row is None:
-        return None
-    m = re.match(r"^\s*(\d+)\s*$", str(row))
-    return int(m.group(1)) if m else None
+        return "", None
+    m = _ROW_LABEL_RE.match(str(row))
+    if not m:
+        return "", None
+    return m.group(1).upper(), int(m.group(2))
+
+
+def row_number(row: Any) -> Optional[int]:
+    """Numeric part of a row label ('1' -> 1, 'A3' -> 3, 'VIP' -> None)."""
+    return row_parts(row)[1]
 
 
 def is_front_seat(info: dict[str, Any]) -> bool:
-    """A seat is 'front' when it's in the ground-floor zone and rows 1..FRONT_ROW_MAX."""
+    """
+    A seat is 'front' when it's in the ground-floor zone and rows 1..FRONT_ROW_MAX.
+    Rows may be plain numbers ('3') or section-prefixed ('A3'); prefixed rows
+    only count when the section is in FRONT_SECTIONS.
+    """
     if info.get("zone") != GROUND_FLOOR_ZONE:
         return False
-    n = row_number(info.get("row"))
-    return n is not None and 1 <= n <= FRONT_ROW_MAX
+    section, n = row_parts(info.get("row"))
+    if n is None or not (1 <= n <= FRONT_ROW_MAX):
+        return False
+    return section == "" or section in FRONT_SECTIONS
 
 
 # -------------------------
