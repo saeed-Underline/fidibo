@@ -773,6 +773,12 @@ def get_shows_info_batch(client: "genai.Client", shows: list[dict]) -> dict[str,
         # "no feedback found" is a miss, not an answer — don't bank it for 14
         # days; leave the show absent so the next run retries.
         if slug in valid_slugs and remark and not run_on and NO_FEEDBACK_MARKER not in remark:
+            # Some replies echo the listing format ("id | title | remark"):
+            # remarks were told to contain no "|", so a short pipe-terminated
+            # prefix is the title echo — drop it (seen Aug 2026).
+            prefix, _, rest = remark.partition("|")
+            if rest.strip() and len(prefix.strip()) <= 60:
+                remark = rest.strip()
             results[slug] = remark
     missed = valid_slugs - set(results)
     if missed:
