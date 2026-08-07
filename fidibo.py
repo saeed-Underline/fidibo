@@ -75,6 +75,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_FAVORITES_CHAT_ID = os.getenv("TELEGRAM_FAVORITES_CHAT_ID", "")
 FAVORITES_FILE = os.getenv("FIDIBO_FAVORITES_FILE", "favorite_shows.txt")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+TELEGRAM_PHOTO_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+TELEGRAM_CAPTION_LIMIT = 1024  # Telegram caps photo captions at 1024 chars
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -173,6 +175,7 @@ class ShowInfo:
     url: str
     event_id: int
     event_uuid: Optional[str]
+    image_url: Optional[str] = None
     sessions: list[SessionInfo] = field(default_factory=list)
     score: Optional[ScoreInfo] = None
 
@@ -262,6 +265,18 @@ def extract_title_from_html(html: str, fallback: str) -> str:
     if og and og.get("content"):
         return og["content"].strip()
     return fallback
+
+
+def extract_image_from_html(html: str) -> Optional[str]:
+    """Poster URL from og:image; passed to Telegram as-is (no local download)."""
+    soup = BeautifulSoup(html, "html.parser")
+    og = soup.find("meta", attrs={"property": "og:image"})
+    if og and og.get("content"):
+        return og["content"].strip()
+    tw = soup.find("meta", attrs={"name": "twitter:image"})
+    if tw and tw.get("content"):
+        return tw["content"].strip()
+    return None
 
 
 _UUID_RE = re.compile(
@@ -548,6 +563,7 @@ def process_show(session: requests.Session, show_url: str) -> Optional[ShowInfo]
             url=show_url,
             event_id=event_id,
             event_uuid=event_uuid,
+            image_url=extract_image_from_html(show_html),
             sessions=sessions,
             score=score,
         )
@@ -628,6 +644,33 @@ def telegram_send(text: str, chat_id: Optional[str] = None) -> None:
         print("[WARN] Telegram send failed:", r.status_code, r.text[:300])
 
 
+def telegram_send_photo(photo_url: str, caption: str, chat_id: Optional[str] = None) -> bool:
+    """
+    Send a photo by URL: Telegram's servers fetch it, so nothing is downloaded
+    or uploaded locally (URL photos are limited to 5 MB / jpg-png by Telegram).
+    Returns False when not sent so the caller can fall back to plain text.
+    """
+    chat_id = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or "PUT_YOUR" in TELEGRAM_BOT_TOKEN:
+        print("[WARN] Telegram token not set, skipping send.")
+        return False
+    if not chat_id:
+        print("[WARN] Telegram chat_id not set, skipping send.")
+        return False
+
+    payload = {
+        "chat_id": chat_id,
+        "photo": photo_url,
+        "caption": caption,
+        "parse_mode": "HTML",
+    }
+    r = requests.post(TELEGRAM_PHOTO_API, data=payload, timeout=30)
+    if r.status_code != 200:
+        print("[WARN] Telegram photo send failed:", r.status_code, r.text[:300])
+        return False
+    return True
+
+
 def telegram_send_many(text: str, chat_id: Optional[str] = None, max_len: int = 3500) -> None:
     """
     Telegram limit is ~4096 chars; we chunk smaller for safety.
@@ -696,8 +739,8 @@ def session_front_seats(sess: SessionInfo) -> int:
     return int((sess.seat_summary or {}).get("available_front_seats") or 0)
 
 
-def build_telegram_summary(shows: list[ShowInfo]) -> str:
-    # The message is about front rows, so only include shows/sessions that
+def relevant_front_shows(shows: list[ShowInfo]) -> list[tuple[ShowInfo, list[SessionInfo]]]:
+    # The report is about front rows, so only include shows/sessions that
     # actually have front-row availability. A show with buyable seats only in
     # back rows / balcony (e.g. خون بس) is intentionally left out.
     relevant: list[tuple[ShowInfo, list[SessionInfo]]] = []
@@ -705,54 +748,71 @@ def build_telegram_summary(shows: list[ShowInfo]) -> str:
         front_sessions = [s for s in show.sessions if session_front_seats(s) > 0]
         if front_sessions:
             relevant.append((show, front_sessions))
+    return relevant
 
-    if not relevant:
-        return f"در حال حاضر صندلیِ ردیف‌های جلو (۱ تا {FRONT_ROW_MAX}) موجود نیست."
 
-    total = total_front_available(shows)
-    lines = []
-    lines.append(f"🎯 <b>Fidibo — front-row seats available</b> (rows 1–{FRONT_ROW_MAX}, {GROUND_FLOOR_ZONE})")
-    lines.append(f"🪑 <b>{total}</b> front-row seat(s) across <b>{len(relevant)}</b> show(s)")
-    lines.append("")
+def build_show_block(idx: int, show: ShowInfo, front_sessions: list[SessionInfo]) -> str:
+    score_txt = ""
+    if show.score and show.score.average is not None:
+        raw = show.score.average
+        v = show.score.count
+        bayes = bayesian_rating(raw, v, prior_mean=3.5, prior_weight=20)
+        # show both raw and bayes so you can compare
+        score_txt = f" ⭐ raw {raw:.2f}/5 (v={v}) | bayes {bayes:.2f}/5"
 
-    # Highlight "only front rows left" sessions up top (the urgent subset).
-    lines.extend(build_front_row_alert(shows))
+    lines = [f"{idx}. <b>{show.title}</b>{score_txt}"]
+    lines.append(f"  <a href=\"{show.url}\">Open show</a>")
 
-    for idx, (show, front_sessions) in enumerate(relevant, start=1):
-        score_txt = ""
-        if show.score and show.score.average is not None:
-            raw = show.score.average
-            v = show.score.count
-            bayes = bayesian_rating(raw, v, prior_mean=3.5, prior_weight=20)
-            # show both raw and bayes so you can compare
-            score_txt = f" ⭐ raw {raw:.2f}/5 (v={v}) | bayes {bayes:.2f}/5"
+    # Only sessions that have front-row availability.
+    for sess in front_sessions:
+        seat = sess.seat_summary or {}
+        front = session_front_seats(sess)
+        av = seat.get("available_seats")
+        rows = _fmt_front_rows(seat)
+        minp = seat.get("available_min_price")
+        maxp = seat.get("available_max_price")
+        cur = seat.get("currency") or ""
 
-        lines.append(f"{idx}. <b>{show.title}</b>{score_txt}")
-        lines.append(f"  <a href=\"{show.url}\">Open show</a>")
+        seat_txt = f" | 🎯 {front} front (rows {rows})"
+        if av is not None:
+            seat_txt += f" | 🪑 {av} total"
+        if minp is not None and maxp is not None:
+            seat_txt += f" | 💰 {minp}-{maxp} {cur}".rstrip()
+        if seat.get("front_rows_only"):
+            seat_txt += " | ⚠️ front rows only"
 
-        # Only sessions that have front-row availability.
-        for sess in front_sessions:
-            seat = sess.seat_summary or {}
-            front = session_front_seats(sess)
-            av = seat.get("available_seats")
-            rows = _fmt_front_rows(seat)
-            minp = seat.get("available_min_price")
-            maxp = seat.get("available_max_price")
-            cur = seat.get("currency") or ""
-
-            seat_txt = f" | 🎯 {front} front (rows {rows})"
-            if av is not None:
-                seat_txt += f" | 🪑 {av} total"
-            if minp is not None and maxp is not None:
-                seat_txt += f" | 💰 {minp}-{maxp} {cur}".rstrip()
-            if seat.get("front_rows_only"):
-                seat_txt += " | ⚠️ front rows only"
-
-            lines.append(f"    - {sess.week_day} {sess.day} {sess.month} {sess.time}{seat_txt}")
-
-        lines.append("")
+        lines.append(f"    - {sess.week_day} {sess.day} {sess.month} {sess.time}{seat_txt}")
 
     return "\n".join(lines)
+
+
+def send_front_row_report(shows: list[ShowInfo], chat_id: Optional[str] = None) -> None:
+    """
+    One header message with the totals and the front-rows-only alert, then one
+    message per show topped with its poster (sent by URL, no local download)
+    and the details as the caption. Falls back to plain text when the show has
+    no image, the caption would exceed Telegram's limit, or the send fails.
+    """
+    relevant = relevant_front_shows(shows)
+    if not relevant:
+        return
+
+    total = total_front_available(shows)
+    header = [
+        f"🎯 <b>Fidibo — front-row seats available</b> (rows 1–{FRONT_ROW_MAX}, {GROUND_FLOOR_ZONE})",
+        f"🪑 <b>{total}</b> front-row seat(s) across <b>{len(relevant)}</b> show(s)",
+        "",
+    ]
+    # Highlight "only front rows left" sessions up top (the urgent subset).
+    header.extend(build_front_row_alert(shows))
+    telegram_send_many("\n".join(header), chat_id)
+
+    for idx, (show, front_sessions) in enumerate(relevant, start=1):
+        block = build_show_block(idx, show, front_sessions)
+        if show.image_url and len(block) <= TELEGRAM_CAPTION_LIMIT:
+            if telegram_send_photo(show.image_url, block, chat_id):
+                continue
+        telegram_send_many(block, chat_id)
 
 
 def total_front_available(shows: list[ShowInfo]) -> int:
@@ -837,8 +897,7 @@ def main():
     # Main channel: notify when any ground-floor front-row seat is available.
     front_total = total_front_available(shows)
     if front_total > 0:
-        summary = build_telegram_summary(shows)
-        telegram_send_many(summary)
+        send_front_row_report(shows)
         print(f"Sent Telegram summary ({front_total} front-row seat(s) available).")
     else:
         print("No front-row seats available; skipping Telegram send.")
@@ -853,8 +912,7 @@ def main():
         favs = favorite_shows(shows, favorites)
         fav_front = total_front_available(favs)
         if fav_front > 0:
-            fav_summary = build_telegram_summary(favs)
-            telegram_send_many(fav_summary, TELEGRAM_FAVORITES_CHAT_ID)
+            send_front_row_report(favs, TELEGRAM_FAVORITES_CHAT_ID)
             matched = ", ".join(s.title for s in favs)
             print(f"Sent favorites summary ({fav_front} front-row seat(s)): {matched}")
         else:
